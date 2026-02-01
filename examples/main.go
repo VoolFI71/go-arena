@@ -2,8 +2,7 @@ package main
 
 import (
 	"fmt"
-
-	"go-arena"
+	"github.com/VoolFI71/go-arena"
 )
 
 type User struct {

@@ -74,6 +74,15 @@ func (a *Arena) AllocString(s string) string {
 	return unsafe.String((*byte)(ptr), length)
 }
 
+// AllocBytesToString копирует []byte в арену и возвращает как string.
+func (a *Arena) AllocBytesToString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	tmp := unsafe.String(unsafe.SliceData(b), len(b))
+	return a.AllocString(tmp)
+}
+
 func (a *Arena) allocBytes(size int) []byte {
 	return a.allocAligned(size, 1)
 }

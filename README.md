@@ -1,39 +1,59 @@
-Go Arena: High-Performance Zero-GC Allocator
+# Go Arena: High-Performance Zero-GC Allocator
 
-Go Arena — это аллокатор памяти для Go, который я делал под задачи с жесткими требованиями к задержкам (C10M, HFT, GameDev). Идея простая: вместо частых аллокаций в heap и тяжелого GC мы используем арену с bump-pointer, а затем сбрасываем ее за O(1). В результате GC почти не видит «мелкий мусор», а задержки становятся более ровными.
+Go Arena is a memory allocator for Go designed for systems with extreme latency requirements (C10M, HFT, GameDev).
 
-## Результаты стресс-тестирования
-Ниже — результаты из моего теста с «тяжелой» нагрузкой и фоновым давлением на кучу (5,000,000 активных объектов в памяти). Это не академический бенчмарк, а практический сценарий: куча «живет», а трафик продолжает идти.
+The idea is simple: instead of millions of tiny heap allocations and GC pauses, we use a bump-pointer arena that resets in O(1). The garbage collector stops seeing the "small trash," and latency becomes flat.
 
-Условия теста:
-- Объем: 1,000,000 POST-запросов (парсинг логов).
-- Конкурентность: 100 параллельных воркеров (hey).
-- Среда: Windows 10/11, Go 1.24+.
+## Benchmarks
 
-| Метрика | Standard Heap | Go Arena | Результат |
+Comparisons performed on Intel Core i5-12450H (Windows/amd64). Lower is better.
+
+### 1. Stress Test (Real World Scenario)
+Simulation of a loaded HTTP server (log parsing, DTO creation).
+* Load: 1,000,000 requests.
+* Concurrency: 100 workers.
+* Heap Pressure: 5 million live objects in the background.
+
+| Metric | Standard Heap | Go Arena | Result |
 |---|---|---|---|
-| Throughput (Скорость) | 53,251 RPS | 104,454 RPS | x2 Быстрее |
-| Max Latency (Slowest) | 378 ms | 72 ms | В 5.2 раза стабильнее |
-| 99th Percentile (p99) | 5.6 ms | 2.5 ms | В 2.2 раза меньше лаг |
-| GC Scan Time | Высокий (ms) | Близкий к 0 (µs) | Zero-GC Pressure |
+| Throughput | 53,251 RPS | 104,454 RPS | 2x faster |
+| Max Latency | 378 ms | 72 ms | 5x more stable |
+| p99 Latency | 5.6 ms | 2.5 ms | Lower tail latency |
+| GC Pause | Stop-The-World | Zero | No GC pressure |
 
-> Вывод: когда heap забит миллионами объектов, GC тратит заметное время на сканирование. Арена позволяет вынести эти данные из поля зрения GC и сосредоточиться на обработке запросов.
+### 2. Performance Benchmarks (1,000,000 ops)
 
-## Ключевые возможности
-- Zero Allocation: 0 байт мусора в heap при обработке типичных DTO и строковых данных.
-- O(1) Allocation & Reset: выделение памяти — это сдвиг указателя, а очистка всей арены происходит мгновенно.
-- Generic API: поддержка типов Go (структуры, слайсы).
-- Arena Pool: механизм переиспользования памяти между горутинами/запросами.
+| Operation (1M ops) | Standard Go (Runtime) | Go Arena | Speedup | Allocs/Op (Arena) |
+|---|---|---|---|---|
+| Struct Allocation | 35.3 ns/op | 7.5 ns/op | ~4.7x | 0 |
+| String Copy | 17.1 ns/op | 6.5 ns/op | ~2.6x | 0 |
+| Make Slice (1M len) | 4,467,774 ns/op | 7.4 ns/op | ~600,000x* | 0 |
 
-## Быстрый старт
-Установка:
-```
+> Note: MakeSlice in Arena is O(1) (pointer bump), while Runtime make is O(N) due to memory zeroing. This provides massive performance gains for large temporary buffers.
+
+<details>
+<summary>Full raw benchmark output</summary>
+
+BenchmarkNewObject/Runtime/1000000-12         34          35328644 ns/op        64000062 B/op    1000000 allocs/op
+BenchmarkNewObject/Arena/1000000-12          138           7549980 ns/op               0 B/op          0 allocs/op
+BenchmarkAllocString/Runtime/1000000-12       78          17134946 ns/op        32000003 B/op    1000000 allocs/op
+BenchmarkAllocString/Arena/1000000-12        202           6577214 ns/op               0 B/op          0 allocs/op
+BenchmarkMakeSlice/Runtime/1000000-12        241           4467774 ns/op        56000512 B/op          1 allocs/op
+BenchmarkMakeSlice/Arena/1000000-12      157475995                7.408 ns/op           0 B/op          0 allocs/op
+
+</details>
+
+---
+
+## Installation
+
+```bash
 go get github.com/VoolFI71/go-arena
 ```
 
-## 🛠 Примеры использования
-### 1. HTTP / TCP сервер (паттерн "Arena Pool")
-Это основной сценарий. Используйте ArenaPool, чтобы переиспользовать память между запросами.
+## Examples
+### 1. HTTP / TCP server (Arena Pool pattern)
+This is the primary scenario. Use ArenaPool to reuse memory between requests.
 
 ```go
 package main
@@ -43,85 +63,85 @@ import (
     "github.com/VoolFI71/go-arena"
 )
 
-// Глобальный пул. 64KB обычно достаточно для большинства HTTP-запросов.
+// Global pool. 64KB is enough for most HTTP requests.
 var pool = arena.NewArenaPool(64*1024, 0)
 
 func HandleLog(ctx *fasthttp.RequestCtx) {
-    // 1. Получаем арену из пула
+    // 1. Get an arena from the pool
     mem := pool.Get()
     defer pool.Put(mem)
 
-    // 2. Аллоцируем структуру в арене
+    // 2. Allocate a struct inside the arena
     u := arena.New[UserData](mem)
 
-    // 3. Работа со строками без аллокаций в heap
-    u.Name = mem.AllocString(string(ctx.PostBody()))
+    // 3. Strings without heap allocations
+    u.Name = mem.AllocBytesToString(ctx.PostBody())
 
     ctx.SetStatusCode(200)
 }
 ```
 
-### 2. Работа со слайсами (MakeSlice + Append)
-Показывает правильный аналог стандартного append с передачей арены.
+### 2. Slices (MakeSlice + Append)
+Shows the correct `append` replacement that requires the arena argument.
 
 ```go
-// 4. Работа с динамическими данными
+// 4. Work with dynamic data
 func DynamicWork(mem *arena.Arena) {
-    // Создаем пустой слайс в арене
+    // Create an empty slice in the arena
     items := arena.MakeSlice[int](mem, 0, 10)
 
-    // Используем arena.Append вместо встроенного append
+    // Use arena.Append instead of built-in append
     for i := 0; i < 100; i++ {
         items = arena.Append(mem, items, i)
     }
-    // Даже если слайс вырастет в 10 раз, все аллокации останутся внутри арены
+    // Even if the slice grows 10x, allocations stay inside the arena
 }
 ```
 
-### 3. Сброс арены в цикле (Reset)
-Полезно для долгих циклов в одной горутине без пула.
+### 3. Reset in a loop
+Useful for long loops in a single goroutine without a pool.
 
 ```go
 func Worker() {
-    mem := arena.NewArena(1024*1024, 0) // Арена на 1MB
+    mem := arena.NewArena(1024*1024, 0) // 1MB arena
 
     for i := 0; i < 1000; i++ {
         processIteration(mem)
-        mem.Reset() // Очищаем все накопленное за итерацию за O(1)
+        mem.Reset() // Clear everything from this iteration in O(1)
     }
 }
 ```
 
-## ⚠️ The Safety Contract (Важно!)
-Ручное управление памятью требует дисциплины. Если коротко:
-- Scope Limit: не передавайте указатели на объекты из арены за пределы ее жизненного цикла (после pool.Put или Reset).
-- Concurrency: объект Arena не потокобезопасен. Для параллельной работы используйте ArenaPool.
-- Data Independence: если данные из арены нужны для долгого хранения — сделайте их копию (сериализуйте).
+## The Safety Contract
+Manual memory management requires discipline. In short:
+- Scope Limit: do not return pointers to arena objects outside their lifetime (after pool.Put or Reset).
+- Concurrency: Arena is not thread-safe. Use ArenaPool for parallel use.
+- Data Independence: if you need long-lived data, make a copy (serialize).
 
-### 🚫 Анти-паттерны (так делать нельзя)
+### Anti-patterns (do not do this)
 ```go
-// ❌ ОШИБКА: Возврат указателя на память арены наружу
+// ERROR: Returning a pointer to arena memory
 func BadFunction() *User {
     mem := pool.Get()
-    defer pool.Put(mem) // Память очистится здесь!
+    defer pool.Put(mem) // Memory is cleared here!
 
     u := arena.New[User](mem)
-    return u // <--- DANGER! Caller получит указатель на мусор.
+    return u // <--- DANGER! Caller gets a dangling pointer.
 }
 
-// ❌ ОШИБКА: Использование арены в конкурентных горутинах
+// ERROR: Using one arena from multiple goroutines
 func AsyncLogic(mem *arena.Arena) {
     go func() {
-        // Arena НЕ потокобезопасна (кроме Pool).
-        // Это вызовет гонку данных (Race Condition).
+        // Arena is not thread-safe (except Pool).
+        // This will cause a data race.
         _ = arena.New[int](mem)
     }()
 }
 ```
 
-### ✅ Правильный подход
+### Correct approach
 ```go
-// ✅ Если нужно вернуть данные — сериализуйте их
+// If you need to return data, serialize it
 func GoodFunction() []byte {
     mem := pool.Get()
     defer pool.Put(mem)
@@ -129,30 +149,31 @@ func GoodFunction() []byte {
     u := arena.New[User](mem)
     // ... заполняем u ...
 
-    return json.Marshal(u) // Возвращаем копию байт, независимую от арены
+    return json.Marshal(u) // Return a copy independent from the arena
 }
 ```
 
 ## API Reference
-### Аллокаторы
-- `New[T](a *Arena) *T` — создает объект типа T в арене.
-- `MakeSlice[T](a *Arena, len, cap int) []T` — создает слайс.
-- `AllocString(s string) string` — копирует строку/байты в арену.
+### Allocators
+- `New[T](a *Arena) *T` — allocates an object of type T in the arena.
+- `MakeSlice[T](a *Arena, len, cap int) []T` — creates a slice.
+- `AllocString(s string) string` — copies a string/bytes into the arena.
+- `AllocBytesToString(b []byte) string` — copies []byte into the arena and returns string.
 
-### Вспомогательные функции
-- `Append(a *Arena, slice []T, items ...T) []T` — аналог append, работающий внутри арены.
+### Helper functions
+- `Append(a *Arena, slice []T, items ...T) []T` — append equivalent that stays inside the arena.
 
-### Управление памятью
-- `NewArenaPool(chunkSize, maxRetained int) *ArenaPool` — создает потокобезопасный пул (рекомендуется).
-- `Reset()` — мгновенная очистка всей памяти арены (курсор -> 0).
+### Memory management
+- `NewArenaPool(chunkSize, maxRetained int) *ArenaPool` — thread-safe pool (recommended).
+- `Reset()` — instant arena cleanup (cursor -> 0).
 
-## Под капотом (Architecture)
-Go Arena использует список связанных чанков памяти ([][]byte).
-- При создании выдается один чанк (например, 64KB).
-- New[T] просто сдвигает указатель offset внутри текущего чанка.
-- Если место в чанке кончается, библиотека автоматически выделяет новый чанк и продолжает писать в него.
-- Reset не удаляет чанки, а просто сбрасывает индексы, позволяя мгновенно переиспользовать память.
-> Совет: выбирайте chunkSize в ArenaPool так, чтобы он покрывал 90% ваших типичных запросов. Это уменьшит количество системных аллокаций новых чанков.
+## Under the hood (Architecture)
+Go Arena uses a linked list of memory chunks ([][]byte).
+- On creation, you get a single chunk (e.g., 64KB).
+- New[T] advances the allocation cursor inside the current chunk.
+- When the chunk is full, a new chunk is allocated and used.
+- Reset does not free chunks, it just resets indices for instant reuse.
+> Tip: choose chunkSize in ArenaPool so it covers ~90% of typical requests. This minimizes new chunk allocations.
 
 
 ## License

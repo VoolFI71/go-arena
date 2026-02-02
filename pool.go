@@ -2,14 +2,14 @@ package arena
 
 import "sync"
 
-// ArenaPool хранит и переиспользует арены.
+// ArenaPool stores and reuses arenas. / ArenaPool хранит и переиспользует арены.
 type ArenaPool struct {
 	pool        sync.Pool
 	chunkSize   int
 	maxRetained int
 }
 
-// NewArenaPool создает пул арен.
+// NewArenaPool creates an arena pool. / NewArenaPool создает пул арен.
 func NewArenaPool(chunkSize int, maxRetained int) *ArenaPool {
 	if chunkSize <= 0 {
 		panic("ArenaPool chunk size must be positive")
@@ -28,14 +28,14 @@ func NewArenaPool(chunkSize int, maxRetained int) *ArenaPool {
 	return p
 }
 
-// Get возвращает арену из пула.
+// Get returns an arena from the pool. / Get возвращает арену из пула.
 func (p *ArenaPool) Get() *Arena {
 	a := p.pool.Get().(*Arena)
 	a.Reset()
 	return a
 }
 
-// Put возвращает арену в пул.
+// Put returns an arena to the pool. / Put возвращает арену в пул.
 func (p *ArenaPool) Put(a *Arena) {
 	if a == nil {
 		return

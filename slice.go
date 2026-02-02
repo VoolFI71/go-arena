@@ -2,7 +2,7 @@ package arena
 
 import "unsafe"
 
-// MakeSlice создает слайс в арене с заданной длиной и емкостью.
+// MakeSlice creates a slice in the arena with given length and capacity. / MakeSlice создает слайс в арене с заданной длиной и емкостью.
 func MakeSlice[T any](a *Arena, length int, capacity int) []T {
 	if length < 0 || capacity < 0 {
 		panic("slice length and capacity must be non-negative")
@@ -25,12 +25,11 @@ func MakeSlice[T any](a *Arena, length int, capacity int) []T {
 		panic("slice size overflow")
 	}
 
-	buf := a.allocAligned(total, elemAlign)
-	ptr := unsafe.Pointer(&buf[0])
+	ptr := a.allocRaw(total, elemAlign)
 	return unsafe.Slice((*T)(ptr), capacity)[:length]
 }
 
-// Append добавляет элементы в слайс, выделяя память в арене при нехватке cap.
+// Append adds items, allocating inside arena when cap is insufficient. / Append добавляет элементы в слайс, выделяя память в арене при нехватке cap.
 func Append[T any](a *Arena, slice []T, items ...T) []T {
 	if len(items) == 0 {
 		return slice

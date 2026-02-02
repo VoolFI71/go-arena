@@ -1,5 +1,7 @@
 # Go Arena: High-Performance Zero-GC Allocator
 
+![Go Version](https://img.shields.io/badge/Go-1.18+-00ADD8?logo=go&logoColor=white)
+
 Go Arena is a memory allocator for Go designed for systems with extreme latency requirements (C10M, HFT, GameDev).
 
 The idea is simple: instead of millions of tiny heap allocations and GC pauses, we use a bump-pointer arena that resets in O(1). The garbage collector stops seeing the "small trash," and latency becomes flat.

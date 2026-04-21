@@ -1,5 +1,9 @@
 # Go Arena: High-Performance Zero-GC Allocator
 
+<p align="center">
+  <b>English</b> | <a href="README.ru.md">Русский 🇷🇺</a>
+</p>
+
 ![Go Version](https://img.shields.io/badge/Go-1.18+-00ADD8?logo=go&logoColor=white)
 [![Go Report Card](https://goreportcard.com/badge/github.com/VoolFI71/go-arena)](https://goreportcard.com/report/github.com/VoolFI71/go-arena)
 
@@ -37,14 +41,26 @@ Simulation of a loaded HTTP server (log parsing, DTO creation).
 <details>
 <summary>Full raw benchmark output</summary>
 
+```
 BenchmarkNewObject/Runtime/1000000-12         34          35328644 ns/op        64000062 B/op    1000000 allocs/op
 BenchmarkNewObject/Arena/1000000-12          138           7549980 ns/op               0 B/op          0 allocs/op
 BenchmarkAllocString/Runtime/1000000-12       78          17134946 ns/op        32000003 B/op    1000000 allocs/op
 BenchmarkAllocString/Arena/1000000-12        202           6577214 ns/op               0 B/op          0 allocs/op
 BenchmarkMakeSlice/Runtime/1000000-12        241           4467774 ns/op        56000512 B/op          1 allocs/op
 BenchmarkMakeSlice/Arena/1000000-12      157475995                7.408 ns/op           0 B/op          0 allocs/op
-
+```
 </details>
+
+### 3. Competitor Benchmarks (pooling alternatives)
+Also includes comparisons with:
+- `sync.Pool` for object reuse.
+- `github.com/valyala/bytebufferpool` for byte buffer reuse.
+
+Run smoke benchmarks:
+
+```bash
+go test -run ^$ -bench 'Benchmark(AllocationCompetitors|BufferCompetitors|ArenaPoolThroughput|ArenaPoolVsRaw)' -benchtime=200ms
+```
 
 ---
 
@@ -119,7 +135,9 @@ func Worker() {
 Manual memory management requires discipline. In short:
 - Scope Limit: do not return pointers to arena objects outside their lifetime (after pool.Put or Reset).
 - Concurrency: Arena is not thread-safe. Use ArenaPool for parallel use.
-- Data Independence: if you need long-lived data, make a copy (serialize).
+- **GC Blindness (Dangling Pointers)**: Arena memory hides its contents from the Go Garbage Collector. **Never** store pointers to heap-allocated objects inside arena-allocated structures. The GC will not see the reference and may prematurely free the heap object, causing crashes.
+- **Dirty Memory (Security)**: `Reset()` is O(1) and does NOT zero out memory. Calling `MakeSlice[byte]` returns bytes containing residual data from previous requests. Be sure to overwrite the slice completely before returning it to the user to prevent data leaks (e.g. passwords, PII from previous clients).
+- Data Independence: if you need long-lived data, make a physical copy (e.g., serialize).
 
 ### Anti-patterns (do not do this)
 ```go
@@ -140,6 +158,16 @@ func AsyncLogic(mem *arena.Arena) {
         _ = arena.New[int](mem)
     }()
 }
+
+// ERROR: GC Blindness (Storing heap pointers in arena)
+type Node struct {
+    Data *string
+}
+func GCLeak(mem *arena.Arena) {
+    node := arena.New[Node](mem)
+    str := "Heap Allocated String"
+    node.Data = &str // The GC will NOT trace this reference! 'str' will be freed.
+}
 ```
 
 ### Correct approach
@@ -150,7 +178,7 @@ func GoodFunction() []byte {
     defer pool.Put(mem)
 
     u := arena.New[User](mem)
-    // ... заполняем u ...
+    // ... fill u ...
 
     return json.Marshal(u) // Return a copy independent from the arena
 }
@@ -170,6 +198,14 @@ func GoodFunction() []byte {
 - `NewArenaPool(chunkSize, maxRetained int) *ArenaPool` — thread-safe pool (recommended).
 - `Reset()` — instant arena cleanup (cursor -> 0).
 
+## API Stability and SemVer
+- Current stability level: **v0** (pre-1.0). Breaking changes are still possible.
+- SemVer policy:
+  - Patch: bug fixes and non-breaking internals.
+  - Minor: new API additions without breaking existing signatures.
+  - Major (or pre-1.0 breaking release): incompatible API changes.
+- Public API signatures are compile-checked in `api_contract_test.go` to catch accidental breaking changes.
+
 ## Under the hood (Architecture)
 Go Arena uses a linked list of memory chunks ([][]byte).
 - On creation, you get a single chunk (e.g., 64KB).
@@ -177,7 +213,6 @@ Go Arena uses a linked list of memory chunks ([][]byte).
 - When the chunk is full, a new chunk is allocated and used.
 - Reset does not free chunks, it just resets indices for instant reuse.
 > Tip: choose chunkSize in ArenaPool so it covers ~90% of typical requests. This minimizes new chunk allocations.
-
 
 ## License
 MIT

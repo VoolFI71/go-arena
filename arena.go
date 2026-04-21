@@ -172,3 +172,12 @@ func New[T any](a *Arena) *T {
 	ptr := a.allocRaw(size, align)
 	return (*T)(ptr)
 }
+
+func (a *Arena) UsedBytes() int {
+	total := 0
+	for i := 0; i < a.chunkIndex; i++ {
+		total += cap(a.chunks[i])
+	}
+	total += a.offset
+	return total
+}

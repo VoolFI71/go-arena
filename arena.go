@@ -3,16 +3,29 @@ package arena
 import "unsafe"
 
 // Arena holds memory chunks and allocation cursor. / Arena хранит набор чанков памяти и курсор выделения.
+//
+// Field order is intentional: the three hot fields (offset, curStart, curEnd)
+// are placed first in the struct body so they occupy the very start of the
+// first active cache line (right after the leading false-sharing guard).
+// Cold fields (chunks, chunkSize, maxRetain) follow and may spill to CL2,
+// but they are only touched during chunk growth and Reset — not on every alloc.
 type Arena struct {
-	_          [64]byte
-	chunks     [][]byte       // Chunk storage. / Набор чанков памяти.
-	chunkSize  int            // Base chunk size. / Базовый размер чанка.
-	chunkIndex int            // Current chunk index. / Индекс текущего чанка.
-	offset     int            // Cursor inside chunk. / Курсор внутри чанка.
-	curStart   unsafe.Pointer // Pointer to current chunk start. / Указатель на начало текущего чанка.
-	curEnd     int            // Cached cap() of current chunk. / Кэшированный cap() текущего чанка.
-	maxRetain  int            // Retained memory after Reset. / Сколько памяти оставляем после Reset.
-	_          [64]byte
+	_ [64]byte // false-sharing guard / защита от false sharing
+
+	// --- hot path (touched on every allocation) ---
+	offset   int            // Cursor inside current chunk. / Курсор внутри текущего чанка.
+	curStart unsafe.Pointer // Pointer to current chunk start. / Указатель на начало текущего чанка.
+	curEnd   int            // Cached cap() of current chunk. / Кэшированный cap() текущего чанка.
+
+	// --- warm path (touched on chunk switch) ---
+	chunkIndex int // Current chunk index. / Индекс текущего чанка.
+
+	// --- cold path (touched only during growth / Reset) ---
+	chunkSize int      // Base chunk size. / Базовый размер чанка.
+	maxRetain int      // Retained memory after Reset. / Сколько памяти оставляем после Reset.
+	chunks    [][]byte // Chunk storage. / Набор чанков памяти.
+
+	_ [64]byte // false-sharing guard / защита от false sharing
 }
 
 // NewArena creates an arena with fixed chunk size. / NewArena создает арену фиксированного размера чанка.
@@ -96,6 +109,24 @@ func (a *Arena) AllocBytesToString(b []byte) string {
 	}
 	tmp := unsafe.String(unsafe.SliceData(b), len(b))
 	return a.AllocString(tmp)
+}
+
+// AllocBytes reserves n bytes in the arena and returns them as a []byte.
+// The returned slice is valid until the next Reset or pool.Put call.
+//
+// WARNING: Reset does NOT zero memory. The slice may contain residual data
+// from previous allocations. Zero it yourself if the content is security-sensitive
+// (e.g. passwords, PII) before passing it outside the request scope.
+//
+// Panics if n < 0. Returns nil for n == 0.
+func (a *Arena) AllocBytes(n int) []byte {
+	if n < 0 {
+		panic("arena: AllocBytes called with negative size")
+	}
+	if n == 0 {
+		return nil
+	}
+	return a.allocBytes(n)
 }
 
 func (a *Arena) allocBytes(size int) []byte {

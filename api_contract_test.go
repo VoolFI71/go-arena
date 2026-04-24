@@ -16,6 +16,7 @@ func TestPublicAPIContracts(t *testing.T) {
 	var _ func(*Arena) = (*Arena).Reset
 	var _ func(*Arena, string) string = (*Arena).AllocString
 	var _ func(*Arena, []byte) string = (*Arena).AllocBytesToString
+	var _ func(*Arena, int) []byte = (*Arena).AllocBytes
 	var _ func(*Arena) int = (*Arena).UsedBytes
 
 	// Pool methods.
